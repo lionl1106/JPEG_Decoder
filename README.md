@@ -1,2 +1,2 @@
 # JPEG_Decoder
-A simple implement of the JPEG baseline decoder.
+A simple implement of the JPEG baseline decoder in Python.
