@@ -18,16 +18,46 @@ def Build_Huffman(bit_lengths, symbols):
 
     return huffman_table
 
-def DQT_Process(jpeg_data, start):
+def SOF_Process(jpeg_data, start):
+    start += 2
+    # Read length
+    length = jpeg_data[start] << 8 | jpeg_data[start + 1]
+    print(f'SOF sequence length = {length}')
+    
+    image_info = {
+        'precision': jpeg_data[start + 2],
+        'height': jpeg_data[start + 3] << 8 | jpeg_data[start + 4],
+        'width': jpeg_data[start + 5] << 8 | jpeg_data[start + 6],
+        'num_components': jpeg_data[start + 7],
+        'components': []
+    }
+
+    # Extract component information
+    pos, end = start + 8, start + length
+    while pos < end:
+        component_id = jpeg_data[pos]
+        sampling_factors = jpeg_data[pos + 1]
+        h_sampling = sampling_factors >> 4
+        v_sampling = sampling_factors & 0x0F
+        quant_table_selector = jpeg_data[pos + 2]
+        pos += 3
+        image_info['components'].append({
+            'id': component_id,
+            'h_factor': h_sampling,
+            'v_factor': v_sampling,
+            'quant_table': quant_table_selector
+        })
+
+    return image_info, pos
+
+def DQT_Process(jpeg_data, start, quantization_tables):
     start += 2
     # Read length
     length = jpeg_data[start] << 8 | jpeg_data[start + 1]
     print(f'DQT sequence length = {length}')
-    end = start + length
     
     # Start decoding tables
-    pos = start + 2
-    quantization_tables = {}
+    pos, end = start + 2, start + length
     while pos < end:
         # Read Table Information
         precision = (jpeg_data[pos] & 0xF0) >> 4
@@ -47,16 +77,14 @@ def DQT_Process(jpeg_data, start):
     
     return quantization_tables, pos
 
-def DHT_Process(jpeg_data, start):
+def DHT_Process(jpeg_data, start, huffman_tables):
     start += 2
     # Read length
     length = jpeg_data[start] << 8 | jpeg_data[start + 1]
     print(f'DHT sequence length = {length}')
-    end = start + length
     
     # Start decoding tables
-    pos = start + 2
-    huffman_tables = {}
+    pos, end = start + 2, start + length
     while pos < end:
         # Class id for AC or DC
         class_id = (jpeg_data[pos] & 0xF0) >> 4  
@@ -78,11 +106,23 @@ def DHT_Process(jpeg_data, start):
 
     return huffman_tables, pos
 
-file_path = 'me.jpg'
+def SOS_Process(jpeg_data, start):
+    start += 2
+    # Read length
+    length = jpeg_data[start] << 8 | jpeg_data[start + 1]
+    print(f'SOS components = {length}')
+    end = start + length
+
+    pos = start + 2
+    print(jpeg_data[pos : end])
+    
+    return end
+    
+file_path = 'monalisa.jpg'
 jpeg_data = Read_JPEG(file_path)
 
 data_size = len(jpeg_data)-1
-processing_queue = []
+huffman_tables, quantization_tables = {}, {}
 i, is_end = 0, 0
 while(not is_end and i < data_size):
     code = jpeg_data[i] << 8 | jpeg_data[i+1]
@@ -92,16 +132,16 @@ while(not is_end and i < data_size):
             print(format(code, 'x'), 'Start of the image')
         case 0xFFDB:
             print(format(code, 'x'), 'Quantization tables')
-            quantization_tables, i = DQT_Process(jpeg_data, i)
+            quantization_tables, i = DQT_Process(jpeg_data, i, quantization_tables)
         case 0xFFC4:
             print(format(code, 'x'), 'Huffman tables')
-            huffman_tables, i = DHT_Process(jpeg_data, i)
+            huffman_tables, i = DHT_Process(jpeg_data, i, huffman_tables)
         case 0xFFC0:
-            i += 1
             print(format(code, 'x'), 'Image structures')
+            image_info, i = SOF_Process(jpeg_data, i)
         case 0xFFDA:
-            i += 1
             print(format(code, 'x'), 'Start of decompressing')
+            i = SOS_Process(jpeg_data, i)
         case 0xFFD9:
             i += 1
             print(format(code, 'x'), 'End of the image')
@@ -110,6 +150,7 @@ while(not is_end and i < data_size):
             i += 1
             pass
 
+#image_info
 #print(quantization_tables)
-print(huffman_tables)
+#print(huffman_tables)
 #print(jpeg_data)
