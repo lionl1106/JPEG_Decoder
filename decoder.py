@@ -1,3 +1,6 @@
+import math
+import time
+
 class JPEG_Decoder:
     def __init__(self, file_path):
         self.image_info = {}
@@ -7,6 +10,16 @@ class JPEG_Decoder:
 
         self.pos, self.end = 0, len(self.data)
         self.bit_pos = -1
+        DCT = [[0 for _ in range(8)] for _ in range(8)]
+        for i in range(8):
+            for j in range(8):
+                DCT[i][j] = 1 / math.sqrt(8) * math.cos(math.pi * i * (0.5 + j) / 8)
+                if i != 0:
+                    DCT[i][j] *= math.sqrt(2)
+
+        # Compute the Kronecker product of the DCT transpose matrix
+        DCT_T = [[DCT[j][i] for j in range(8)] for i in range(8)]
+        self.kron_matrix = self.Kronecker_Product(DCT_T, DCT_T)
 
     def Get_bit(self):
         if self.bit_pos / 8 == self.end : raise RuntimeError("Out of file")
@@ -36,9 +49,7 @@ class JPEG_Decoder:
         while code not in huffman_table:
             code += str(self.Get_bit())
             
-        symbol = huffman_table[code]
-        #print(f'code = {code}, symbol = {symbol}')
-        return symbol
+        return huffman_table[code]
 
     def Parse(self):
         huffman_tables, quantization_tables = {}, {}
@@ -73,7 +84,7 @@ class JPEG_Decoder:
         # Read length
         length = self.Get_bytes(1) << 8 | self.Get_bytes(1)
         print(f'SOF sequence length = {length}')
-    
+
         self.image_info = {
             'precision': self.Get_bytes(1),
             'height': self.Get_bytes(1) << 8 | self.Get_bytes(1),
@@ -81,6 +92,7 @@ class JPEG_Decoder:
             'num_components': self.Get_bytes(1),
             'components': []
         }
+        self.image = [[0] * self.image_info['width'] for _ in range(self.image_info['height'])]
 
         # Extract component information
         length -= 8
@@ -135,7 +147,7 @@ class JPEG_Decoder:
             length -= 1
             byte = self.Get_bytes(1)
             class_id, table_id = (byte & 0xF0) >> 4, byte & 0x0F 
-            print(f"Table ID = {table_id}, AC or DC = {class_id}, code = {byte}")
+            #print(f"Table ID = {table_id}, AC or DC = {class_id}, code = {byte}")
             
             # Bit lengths
             length -= 16
@@ -162,27 +174,42 @@ class JPEG_Decoder:
             [_, byte] = self.Get_bytes(2)
             huffman_mappings['DC'].append((byte & 0xF0) >> 4)
             huffman_mappings['AC'].append(byte & 0x0F)
-    
+
+        # Dont't need them
+        _ = self.Get_bytes(3)
+        print(_)
         # Prepare MCU processing (Y : 0, Cb : 1, Cr : 2)
         mcu_width = 8 * self.image_info['components'][0]['h_factor']
         mcu_height = 8 * self.image_info['components'][0]['v_factor']
         mcus_per_row = (self.image_info['width'] + mcu_width - 1) // mcu_width
         mcus_per_col = (self.image_info['height'] + mcu_height - 1) // mcu_height
-        #print(f'mcu_width = {mcu_width}, mcu_height = {mcu_height}')
-        #print(f'mcu_row = {mcus_per_row}, mcu_col = {mcus_per_col}')
+        print(f'mcu_width = {mcu_width}, mcu_height = {mcu_height}')
+        print(f'mcu_row = {mcus_per_row}, mcu_col = {mcus_per_col}')
         YCbCr_data = {'Y': [], 'Cb': [], 'Cr': []}
         DC_prev = {'Y' : 0, 'Cb' : 0, 'Cr' : 0}
+        self.Y, self.Cb, self.Cr = 0, 0, 0
         for i in range(mcus_per_row):
             for j in range(mcus_per_col):
+                #print(f'cnt = {cnt}', end = ' ')
                 for _ in range(4):
                     block, DC_prev['Y'] = self.MCU_Decode(huffman_mappings, DC_prev['Y'], 0)
                     YCbCr_data['Y'].append(block)
+                    self.Y = max(self.Y, block[0])
         
                 # Cb Block
-                YCbCr_data['Cb'], DC_prev['Cb'] = self.MCU_Decode(huffman_mappings, DC_prev['Cb'], 1)
-        
+                block, DC_prev['Cb'] = self.MCU_Decode(huffman_mappings, DC_prev['Cb'], 1)
+                YCbCr_data['Cb'].append(block)
+                self.Cb = max(self.Cb, block[0])
+                
                 # Cr Block
-                YCbCr_data['Cr'], DC_prev['Cr'] = self.MCU_Decode(huffman_mappings, DC_prev['Cr'], 2)
+                block, DC_prev['Cr'] = self.MCU_Decode(huffman_mappings, DC_prev['Cr'], 2)
+                YCbCr_data['Cr'].append(block)
+                self.Cr = max(self.Cr, block[0])
+
+                for k in range(mcu_height):
+                    for l in range(mcu_width):
+                        self.image
+                        
                 #print(DC_prev)
         print(huffman_mappings)
 
@@ -199,7 +226,7 @@ class JPEG_Decoder:
             
         DC_diff = Bit_Length_Decode(code_len, num)
         coeffs[0] = DC_diff + DC_prev
-        #print(coeffs[0])
+        DC_prev = coeffs[0]
         
         # Decode AC coefficients
         i = 1
@@ -215,8 +242,53 @@ class JPEG_Decoder:
             if i < 64:
                 coeffs[i] = Bit_Length_Decode(code_len, num)
                 i += 1
+        
+        coeffs = self.Dequantization(coeffs, self.quantization_tables[type > 0])
+        coeffs = self.Inverse_Zigzag(coeffs)
+        coeffs = self.IDCT(coeffs)
+        #print(coeffs[0])
+        
+        return coeffs, DC_prev
 
-        return coeffs, coeffs[0]
+    def Inverse_Zigzag(self, coeffs):
+        zigzag_pattern = [0,  1,  5,  6,  14, 15, 27, 28,
+                          2,  4,  7,  13, 16, 26, 29, 42,
+                          3,  8,  12, 17, 25, 30, 41, 43,
+                          9,  11, 18, 24, 31, 40, 44, 53,
+                          10, 19, 23, 32, 39, 45, 52, 54,
+                          20, 22, 33, 38, 46, 51, 55, 60,
+                          21, 34, 37, 47, 50, 56, 59, 61,
+                          35, 36, 48, 49, 57, 58, 62, 63]
+
+        return [coeffs[zigzag_pattern[i]] for i in range(64)]
+
+    def Dequantization(self, coeffs, Q_table):
+        return [coeffs[i] * Q_table[i] for i in range(64)]
+
+    def IDCT(self, coeffs):
+        result = []
+        for i in range(64):
+            sum = 0
+            for j in range(64):
+                sum += self.kron_matrix[i][j] * coeffs[j]
+            result.append(int(sum))
+        return result
+
+    def Kronecker_Product(self, m1, m2):
+        # Create an empty result matrix with the proper dimensions
+        m1_rows, m1_cols = len(m1), len(m1[0])
+        m2_rows, m2_cols = len(m2), len(m2[0])
+        
+        # Fill in the result matrix
+        result = [[0] * (m1_cols * m2_cols) for _ in range(m1_rows * m2_rows)]
+        for i in range(m1_rows):
+            for j in range(m1_cols):
+                for k in range(m2_rows):
+                    for l in range(m2_cols):
+                        result[i * m2_rows + k][j * m2_cols + l] = m1[i][j] * m2[k][l]
+        
+        return result
+
 
 def Bit_Length_Decode(code_len, num):
     if code_len == 0 : return 0
@@ -241,7 +313,11 @@ def Build_Huffman(bit_lengths, symbols):
 
     return huffman_table
 
+
+
+start = time.time()
 JPEG_Decoder = JPEG_Decoder('monalisa.jpg')
 JPEG_Decoder.Parse()
-#print(JPEG_Decoder.huffman_tables)
-#print(JPEG_Decoder.image_info)
+print(f'Max Y = {JPEG_Decoder.Y}, Max Cb = {JPEG_Decoder.Cb}, Max Cr = {JPEG_Decoder.Cr}')
+
+print(f'Time taken : {(time.time() - start) / 10000 * 10000}')
