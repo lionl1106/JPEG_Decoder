@@ -1,11 +1,13 @@
 import math
 import time
+from PIL import Image
 
 class JPEG_Decoder:
-    def __init__(self, file_path):
+    def __init__(self, filename):
+        self.filename = filename
         self.image_info = {}
         self.quantization_tables, self.huffman_tables = {}, {}
-        with open(file_path, 'rb') as file:
+        with open(filename, 'rb') as file:
             self.data = list(map(int, file.read()))
 
         self.pos, self.end = 0, len(self.data)
@@ -179,36 +181,34 @@ class JPEG_Decoder:
         _ = self.Get_bytes(3)
         print(_)
         # Prepare MCU processing (Y : 0, Cb : 1, Cr : 2)
-        mcu_width = 8 * self.image_info['components'][0]['h_factor']
-        mcu_height = 8 * self.image_info['components'][0]['v_factor']
+        h_factor = self.image_info['components'][0]['h_factor']
+        v_factor = self.image_info['components'][0]['v_factor']
+        mcu_width = 8 * h_factor
+        mcu_height = 8 * v_factor
         mcus_per_row = (self.image_info['width'] + mcu_width - 1) // mcu_width
         mcus_per_col = (self.image_info['height'] + mcu_height - 1) // mcu_height
         print(f'mcu_width = {mcu_width}, mcu_height = {mcu_height}')
         print(f'mcu_row = {mcus_per_row}, mcu_col = {mcus_per_col}')
         
         DC_prev = {'Y' : 0, 'Cb' : 0, 'Cr' : 0}
-        self.Y, self.Cb, self.Cr = 0, 0, 0
         for i in range(mcus_per_col):
             for j in range(mcus_per_row):
                 #print(f'cnt = {cnt}', end = ' ')
                 YCbCr_data = {'Y': [], 'Cb': [], 'Cr': []}
-                for _ in range(4):
+                for _ in range(v_factor * h_factor):
                     block, DC_prev['Y'] = self.MCU_Decode(huffman_mappings, DC_prev['Y'], 0)
                     YCbCr_data['Y'].append(block)
-                    self.Y = max(self.Y, block[0])
         
                 # Cb Block
                 block, DC_prev['Cb'] = self.MCU_Decode(huffman_mappings, DC_prev['Cb'], 1)
                 YCbCr_data['Cb'].append(block)
-                self.Cb = max(self.Cb, block[0])
                 
                 # Cr Block
                 block, DC_prev['Cr'] = self.MCU_Decode(huffman_mappings, DC_prev['Cr'], 2)
                 YCbCr_data['Cr'].append(block)
-                self.Cr = max(self.Cr, block[0])
 
-                for k in range(mcu_height // 8):
-                    for l in range(mcu_width // 8):
+                for k in range(v_factor):
+                    for l in range(h_factor):
                         for block_y in range(8):
                             y = i * mcu_height + 8 * k + block_y
                             if y >= self.image_info['height']: 
@@ -218,7 +218,7 @@ class JPEG_Decoder:
                                 if x >= self.image_info['width']: 
                                     break
                                 # +128 for the offset
-                                self.image[y][x][0] = YCbCr_data['Y'][k * 2 + l][block_y * 8 + block_x] #+ 128
+                                self.image[y][x][0] = YCbCr_data['Y'][k * v_factor + l][block_y * 8 + block_x] #+ 128
                                 self.image[y][x][1] = YCbCr_data['Cb'][0][block_y * 8 + block_x] #+ 128
                                 self.image[y][x][2] = YCbCr_data['Cr'][0][block_y * 8 + block_x] #+ 128
                                 
@@ -285,7 +285,7 @@ class JPEG_Decoder:
             sum = 0
             for j in range(64):
                 sum += self.kron_matrix[i][j] * coeffs[j]
-            result.append(int(sum))
+            result.append(sum)
         return result
 
     def Kronecker_Product(self, m1, m2):
@@ -309,10 +309,23 @@ class JPEG_Decoder:
         for y in range(height):
             for x in range(width):
                 Y, Cb, Cr = self.image[y][x][0], self.image[y][x][1], self.image[y][x][2]
-                R = int(Y + 1.402 * (Cr) + 128)
-                G = int(Y - 0.344136 * (Cb) - 0.714136 * (Cr) + 128)
-                B = int(Y + 1.772 * (Cb) + 128)
-                self.image[y][x][0], self.image[y][x][1], self.image[y][x][2] = min(R, 255), min(G, 255), min(B, 255)
+                R = Y + 1.402 * Cr + 128
+                G = Y - 0.344136 * Cb - 0.714136 * Cr + 128
+                B = Y + 1.772 * Cb + 128
+                self.image[y][x][0], self.image[y][x][1], self.image[y][x][2] = R, G, B
+
+    def Make_BMP(self):
+        # Create a new image
+        im = Image.new('RGB', (self.image_info['width'], self.image_info['height']))
+        
+        # Put data into the image
+        for y in range(self.image_info['height']):
+            for x in range(self.image_info['width']):
+                im.putpixel((x, y), tuple(map(int, self.image[y][x])))
+                
+        # Save the image
+        im.save(f'{self.filename}.bmp')
+        im.show()
 
 
 def Bit_Length_Decode(code_len, num):
@@ -338,8 +351,11 @@ def Build_Huffman(bit_lengths, symbols):
 
     return huffman_table
 
-
-
-start = time.time()
-JPEG_Decoder = JPEG_Decoder('monalisa.jpg')
-JPEG_Decoder.Parse()
+filenames = ['monalisa', 'teatime', 'gig-sn08', 'gig-sn01']
+for filename in filenames:
+    start = time.time()
+    jpeg_decoder = JPEG_Decoder(f'{filename}.jpg')
+    jpeg_decoder.Parse()
+    print(f'Time taken : {(time.time() - start) / 10000 * 10000}')
+    jpeg_decoder.Make_BMP()
+    
