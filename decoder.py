@@ -92,7 +92,7 @@ class JPEG_Decoder:
             'num_components': self.Get_bytes(1),
             'components': []
         }
-        self.image = [[0] * self.image_info['width'] for _ in range(self.image_info['height'])]
+        self.image = [[[0 for channel in range(3)] for _ in range(self.image_info['width'])] for _ in range(self.image_info['height'])]
 
         # Extract component information
         length -= 8
@@ -185,12 +185,13 @@ class JPEG_Decoder:
         mcus_per_col = (self.image_info['height'] + mcu_height - 1) // mcu_height
         print(f'mcu_width = {mcu_width}, mcu_height = {mcu_height}')
         print(f'mcu_row = {mcus_per_row}, mcu_col = {mcus_per_col}')
-        YCbCr_data = {'Y': [], 'Cb': [], 'Cr': []}
+        
         DC_prev = {'Y' : 0, 'Cb' : 0, 'Cr' : 0}
         self.Y, self.Cb, self.Cr = 0, 0, 0
-        for i in range(mcus_per_row):
-            for j in range(mcus_per_col):
+        for i in range(mcus_per_col):
+            for j in range(mcus_per_row):
                 #print(f'cnt = {cnt}', end = ' ')
+                YCbCr_data = {'Y': [], 'Cb': [], 'Cr': []}
                 for _ in range(4):
                     block, DC_prev['Y'] = self.MCU_Decode(huffman_mappings, DC_prev['Y'], 0)
                     YCbCr_data['Y'].append(block)
@@ -206,11 +207,24 @@ class JPEG_Decoder:
                 YCbCr_data['Cr'].append(block)
                 self.Cr = max(self.Cr, block[0])
 
-                for k in range(mcu_height):
-                    for l in range(mcu_width):
-                        self.image
-                        
+                for k in range(mcu_height // 8):
+                    for l in range(mcu_width // 8):
+                        for block_y in range(8):
+                            y = i * mcu_height + 8 * k + block_y
+                            if y >= self.image_info['height']: 
+                                break
+                            for block_x in range(8):
+                                x = j * mcu_width + 8 * l + block_x
+                                if x >= self.image_info['width']: 
+                                    break
+                                # +128 for the offset
+                                self.image[y][x][0] = YCbCr_data['Y'][k * 2 + l][block_y * 8 + block_x] #+ 128
+                                self.image[y][x][1] = YCbCr_data['Cb'][0][block_y * 8 + block_x] #+ 128
+                                self.image[y][x][2] = YCbCr_data['Cr'][0][block_y * 8 + block_x] #+ 128
+                                
+                
                 #print(DC_prev)
+        self.YCbCr_2_RGB()
         print(huffman_mappings)
 
     def MCU_Decode(self, huffman_mappings, DC_prev, type):
@@ -289,6 +303,17 @@ class JPEG_Decoder:
         
         return result
 
+    def YCbCr_2_RGB(self):
+
+        height, width = len(self.image), len(self.image[0])
+        for y in range(height):
+            for x in range(width):
+                Y, Cb, Cr = self.image[y][x][0], self.image[y][x][1], self.image[y][x][2]
+                R = int(Y + 1.402 * (Cr) + 128)
+                G = int(Y - 0.344136 * (Cb) - 0.714136 * (Cr) + 128)
+                B = int(Y + 1.772 * (Cb) + 128)
+                self.image[y][x][0], self.image[y][x][1], self.image[y][x][2] = min(R, 255), min(G, 255), min(B, 255)
+
 
 def Bit_Length_Decode(code_len, num):
     if code_len == 0 : return 0
@@ -318,6 +343,3 @@ def Build_Huffman(bit_lengths, symbols):
 start = time.time()
 JPEG_Decoder = JPEG_Decoder('monalisa.jpg')
 JPEG_Decoder.Parse()
-print(f'Max Y = {JPEG_Decoder.Y}, Max Cb = {JPEG_Decoder.Cb}, Max Cr = {JPEG_Decoder.Cr}')
-
-print(f'Time taken : {(time.time() - start) / 10000 * 10000}')
